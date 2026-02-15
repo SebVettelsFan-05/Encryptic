@@ -8,13 +8,13 @@ module top_uart_crypto_basys3 (
     output logic uart_txd    // UART TX (A18)
 );
 
-    logic clk_50m;
-    always_ff @(posedge clk) begin
-        if (reset)
-            clk_50m <= 1'b0;
-        else
-            clk_50m <= ~clk_50m;
-    end
+logic clk_50m;
+always_ff @(posedge clk or posedge reset) begin
+    if (reset)
+        clk_50m <= 1'b0;
+    else
+        clk_50m <= ~clk_50m;
+end
 
     top_uart_crypto #(
         .BAUD_DIV(434)
