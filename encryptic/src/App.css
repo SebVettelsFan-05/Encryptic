@@ -10,7 +10,7 @@
 }
 
 .shell {
-  width: min(720px, 100%);
+  width: min(840px, 100%);
   display: grid;
   gap: 12px;
   position: relative;
@@ -38,9 +38,11 @@
 
 .brand {
   width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 14px;
+  display: block;
+}
+
+.brand__content {
+  min-width: 0;
 }
 
 .brand__mark {
@@ -351,6 +353,13 @@
   color: var(--text);
 }
 
+.fontToggle {
+  white-space: nowrap;
+  float: right;
+  margin-left: 12px;
+  margin-bottom: 8px;
+}
+
 .primary:disabled,
 .secondary:disabled,
 .ghost:disabled {
@@ -392,6 +401,12 @@
     width: min(120vw, 760px);
     transform: translateY(-50%);
     opacity: 0.14;
+  }
+
+  .fontToggle {
+    float: none;
+    margin-left: 0;
+    margin-bottom: 8px;
   }
 
   .donationCard,

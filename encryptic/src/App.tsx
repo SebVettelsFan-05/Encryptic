@@ -124,6 +124,10 @@ function Dropzone({ file, isDragActive, inputRef, onPick, onFileSelected, onDrag
 }
 
 export default function App() {
+  const [useDyslexiaFont, setUseDyslexiaFont] = useState<boolean>(() => {
+    const saved = localStorage.getItem("encryptic.useDyslexiaFont");
+    return saved === null ? true : saved === "true";
+  });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [mode, setMode] = useState<Mode>("encrypt");
   const [passkey, setPasskey] = useState("");
@@ -159,6 +163,11 @@ export default function App() {
     const encrypted = await isEncrypticFile(file);
     setMode(encrypted ? "decrypt" : "encrypt");
   }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("font-dyslexia", useDyslexiaFont);
+    localStorage.setItem("encryptic.useDyslexiaFont", String(useDyslexiaFont));
+  }, [useDyslexiaFont]);
 
   useEffect(() => {
     if (!CAPTCHA_REQUIRED) return;
@@ -257,7 +266,15 @@ export default function App() {
       <main className="shell">
         <header className="header">
           <div className="brand">
-            <div>
+            <button
+              type="button"
+              className="secondary fontToggle"
+              onClick={() => setUseDyslexiaFont((value) => !value)}
+              aria-pressed={useDyslexiaFont}
+            >
+              Dyslexia Font: {useDyslexiaFont ? "On" : "Off"}
+            </button>
+            <div className="brand__content">
               <h1 className="brand__name">Encryptic</h1>
               <p className="brand__tagline">Secure file encryption and decryption for any file type.</p>
               <p className="brand__mission">
@@ -334,8 +351,8 @@ export default function App() {
 
         <section className="opensourceCard" aria-label="Open source">
           <div className="opensourceCard__copy">
-            <p className="opensourceCard__title">Open-source transparency</p>
-            <p className="hint">Running with React + TypeScript frontend and FastAPI + AES-GCM encryption backend.</p>
+            <p className="opensourceCard__title">Open-source</p>
+            <p className="hint">Running with React + TypeScript frontend and hardware accelerated encryption backend and FastAPI.</p>
           </div>
           {SOURCE_CODE_URL ? (
             <a className="secondary opensourceCard__button" href={SOURCE_CODE_URL} target="_blank" rel="noreferrer">
