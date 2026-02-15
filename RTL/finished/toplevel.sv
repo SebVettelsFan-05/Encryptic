@@ -5,7 +5,8 @@ module top_uart_crypto_basys3 (
     input  logic clk,        // 100 MHz (W5)
     input  logic reset,      // center button (U18)
     input  logic uart_rxd,   // UART RX (B18)
-    output logic uart_txd    // UART TX (A18)
+    output logic uart_txd,    // UART TX (A18)
+    output logic [15:0] led
 );
 
 logic clk_50m;
@@ -22,7 +23,8 @@ end
         .clk      (clk_50m),
         .reset    (reset),
         .uart_rxd (uart_rxd),
-        .uart_txd (uart_txd)
+        .uart_txd (uart_txd),
+        .led(led)
     );
 
 endmodule
