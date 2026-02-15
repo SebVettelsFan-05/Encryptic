@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
-crypto_uart.py — CLI for FPGA SHA-256 + AES-256.
-
-Usage:
-    python crypto_uart.py PORT BAUD hash "message"
-    python crypto_uart.py PORT BAUD encrypt PASSPHRASE input.txt output.enc
-    python crypto_uart.py PORT BAUD decrypt PASSPHRASE input.enc output.txt
-
-Add --debug at the end for verbose output.
+crypto_uart.py — Robust CLI for FPGA SHA-256 + AES-256.
 """
 
 import serial
@@ -16,12 +9,17 @@ import time
 
 DEBUG = False
 
-FIRST_BYTE_DELAY = 0.005  # 5ms before first byte of each block
+# --- Timing controls (tune if needed) ---
+STARTUP_DELAY       = 0.4
+POST_KEY_DELAY      = 0.05
+INTER_BLOCK_DELAY   = 0.01
+FIRST_BYTE_DELAY    = 0.01
+RETRY_LIMIT         = 3
 
 
 def open_serial(port, baud):
-    ser = serial.Serial(port, baud, timeout=10)
-    time.sleep(0.3)
+    ser = serial.Serial(port, baud, timeout=5)
+    time.sleep(STARTUP_DELAY)
     ser.reset_input_buffer()
     return ser
 
@@ -37,7 +35,6 @@ def read_line(ser):
 
 
 def send_bytes_safe(ser, data):
-    """Send bytes with a small initial delay to ensure FPGA is ready."""
     time.sleep(FIRST_BYTE_DELAY)
     ser.write(data)
     ser.flush()
@@ -48,55 +45,70 @@ def cmd_hash_string(ser, message):
     payload = b'S' + message.encode('ascii') + b'\r'
     if DEBUG:
         print(f"    [TX] {payload}")
-    ser.write(payload)
-    ser.flush()
-    line = read_line(ser)
-    if '|' in line:
-        return line.split('|')[0]
-    return line
+    send_bytes_safe(ser, payload)
+    return read_line(ser)
 
 
 def cmd_aes_setup(ser, mode, passphrase):
-    # Send Q to exit any lingering AES hex-input mode from previous session
+    ser.reset_input_buffer()
+
+    # force exit any lingering AES mode
     ser.write(b'Q')
     ser.flush()
-    time.sleep(0.01)
+    time.sleep(0.02)
     ser.reset_input_buffer()
 
     cmd = b'E' if mode == 'encrypt' else b'D'
-    payload = cmd + passphrase.encode('ascii') + b'\r'
+    payload = cmd + passphrase.strip().encode('ascii') + b'\r'
+
     if DEBUG:
         print(f"    [TX] {payload}")
-    ser.write(payload)
-    ser.flush()
+
+    send_bytes_safe(ser, payload)
+
     line = read_line(ser)
+
     if 'KEY_OK' not in line:
         print(f"  WARNING: expected KEY_OK, got: '{line}'")
         return False
+
     print(f"  {line}")
+
+    # give FPGA time to finish key expansion
+    time.sleep(POST_KEY_DELAY)
+
     return True
 
 
 def cmd_aes_hex_block(ser, block_16_bytes):
     hex_str = block_16_bytes.hex()
     payload = hex_str.encode('ascii') + b'\r'
+
+    for attempt in range(RETRY_LIMIT):
+
+        ser.reset_input_buffer()
+
+        if DEBUG:
+            print(f"    [TX] {hex_str}\\r (try {attempt+1})")
+
+        send_bytes_safe(ser, payload)
+
+        line = read_line(ser)
+
+        if line:
+            try:
+                return bytes.fromhex(line.strip())
+            except ValueError:
+                if DEBUG:
+                    print(f"    [ERROR] bad hex: '{line}'")
+
+        if DEBUG:
+            print("    [RETRYING BLOCK]")
+        time.sleep(0.02)
+
     if DEBUG:
-        print(f"    [TX] {hex_str}\\r")
-
-    send_bytes_safe(ser, payload)
-
-    line = read_line(ser)
-    clean = line.strip()
-    if not clean:
-        if DEBUG:
-            print(f"    [TIMEOUT]")
-        return None
-    try:
-        return bytes.fromhex(clean)
-    except ValueError:
-        if DEBUG:
-            print(f"    [ERROR] bad hex: '{clean}'")
-        return None
+        print("    [FAILED BLOCK]")
+    return None
 
 
 def pkcs7_pad(data):
@@ -116,6 +128,7 @@ def pkcs7_unpad(data):
 def encrypt_file(ser, passphrase, inpath, outpath):
     with open(inpath, 'rb') as f:
         plaintext = f.read()
+
     padded = pkcs7_pad(plaintext)
     num_blocks = len(padded) // 16
 
@@ -129,32 +142,37 @@ def encrypt_file(ser, passphrase, inpath, outpath):
 
     ciphertext = b''
     t0 = time.time()
+
     for i in range(num_blocks):
-        block = padded[i*16 : (i+1)*16]
+        block = padded[i*16:(i+1)*16]
+
         ct_block = cmd_aes_hex_block(ser, block)
         if ct_block is None:
             print(f"\n  ABORTED at block {i+1}")
             return
+
         ciphertext += ct_block
-        pct = (i + 1) * 100 // num_blocks
+
+        time.sleep(INTER_BLOCK_DELAY)
+
         if not DEBUG:
-            elapsed = time.time() - t0
-            rate = (i + 1) / elapsed if elapsed > 0 else 0
-            eta = (num_blocks - i - 1) / rate if rate > 0 else 0
-            print(f"\r  Encrypting: block {i+1}/{num_blocks} ({pct}%) [{rate:.0f} blk/s, ~{eta:.0f}s left]", end='', flush=True)
+            pct = (i+1)*100//num_blocks
+            print(f"\r  Encrypting: {i+1}/{num_blocks} ({pct}%)", end='', flush=True)
 
     print()
+
     with open(outpath, 'wb') as f:
         f.write(ciphertext)
-    elapsed = time.time() - t0
-    print(f"  Written to: {outpath} ({elapsed:.1f}s)")
+
+    print(f"  Written to: {outpath} ({time.time()-t0:.1f}s)")
 
 
 def decrypt_file(ser, passphrase, inpath, outpath):
     with open(inpath, 'rb') as f:
         ciphertext = f.read()
+
     if len(ciphertext) % 16 != 0:
-        print("ERROR: Ciphertext is not a multiple of 16 bytes")
+        print("ERROR: Ciphertext is not multiple of 16")
         return
 
     num_blocks = len(ciphertext) // 16
@@ -168,32 +186,35 @@ def decrypt_file(ser, passphrase, inpath, outpath):
 
     plaintext_padded = b''
     t0 = time.time()
+
     for i in range(num_blocks):
-        block = ciphertext[i*16 : (i+1)*16]
+        block = ciphertext[i*16:(i+1)*16]
+
         pt_block = cmd_aes_hex_block(ser, block)
         if pt_block is None:
             print(f"\n  ABORTED at block {i+1}")
             return
+
         plaintext_padded += pt_block
-        pct = (i + 1) * 100 // num_blocks
+
+        time.sleep(INTER_BLOCK_DELAY)
+
         if not DEBUG:
-            elapsed = time.time() - t0
-            rate = (i + 1) / elapsed if elapsed > 0 else 0
-            eta = (num_blocks - i - 1) / rate if rate > 0 else 0
-            print(f"\r  Decrypting: block {i+1}/{num_blocks} ({pct}%) [{rate:.0f} blk/s, ~{eta:.0f}s left]", end='', flush=True)
+            pct = (i+1)*100//num_blocks
+            print(f"\r  Decrypting: {i+1}/{num_blocks} ({pct}%)", end='', flush=True)
 
     print()
 
     try:
         plaintext = pkcs7_unpad(plaintext_padded)
     except ValueError:
-        print("  WARNING: Invalid padding — wrong passphrase? Writing raw output.")
+        print("  WARNING: Invalid padding — writing raw output.")
         plaintext = plaintext_padded
 
     with open(outpath, 'wb') as f:
         f.write(plaintext)
-    elapsed = time.time() - t0
-    print(f"  Written to: {outpath} ({elapsed:.1f}s)")
+
+    print(f"  Written to: {outpath} ({time.time()-t0:.1f}s)")
 
 
 def print_usage():
@@ -220,11 +241,8 @@ if __name__ == "__main__":
     ser = open_serial(port, baud)
 
     if cmd == "hash" and len(sys.argv) >= 5:
-        message = sys.argv[4]
-        line = cmd_hash_string(ser, message)
-        if '|' in line:
-            line = line.split('|')[0]
-        print(f'SHA-256("{message}") = {line}')
+        result = cmd_hash_string(ser, sys.argv[4])
+        print(result)
 
     elif cmd == "encrypt" and len(sys.argv) >= 7:
         encrypt_file(ser, sys.argv[4], sys.argv[5], sys.argv[6])
