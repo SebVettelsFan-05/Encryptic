@@ -1,0 +1,83 @@
+# Vivado Project Files - Ignore generated and temporary files
+
+# Vivado log files
+*.jou
+*.log
+*.str
+
+# Vivado backup files
+*.backup.*
+*.bak
+vivado*.backup.*
+
+# Generated directories (these can be huge!)
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.gen/
+
+# Synthesis and implementation results
+*.dcp
+*.bit
+*.ltx
+*.debug
+*.rpt
+*.vdi
+
+# Generated HDL files
+*_stub.v
+*_stub.vhdl
+*_funcsim.v
+*_funcsim.vhdl
+*_clocks.xdc
+*_ooc.xdc
+
+# Board definition files (if not custom)
+*.runs/impl_1/
+*.runs/synth_1/
+
+# Vivado project backup
+*.xpr.backup.*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+
+
+# Simulation specific files and directories
+*.sim/
+simulation/
+sim/
+xsim/
+*.wdb
+*.wcfg
+*.vcd
+*.ghw
+*.fst
+*.tcl~
+xelab.*
+xsim.*
+webtalk*
+compile.log
+elaborate.log
+simulate.log
+xvlog.log
+xvhdl.log
+xelab.log
+xsim.log
