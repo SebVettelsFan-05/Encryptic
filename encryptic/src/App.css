@@ -5,12 +5,30 @@
   padding: 24px;
   display: grid;
   place-items: center;
+  position: relative;
+  overflow: hidden;
 }
 
 .shell {
   width: min(720px, 100%);
   display: grid;
   gap: 12px;
+  position: relative;
+  z-index: 1;
+}
+
+.pageLogoBackdrop {
+  position: absolute;
+  right: -110px;
+  top: 50%;
+  width: 1300px;
+  height: auto;
+  transform: translateY(-50%);
+  opacity: 0.2;
+  filter: saturate(0.85);
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
 }
 
 .header {
@@ -79,18 +97,20 @@
   border-radius: 14px;
   padding: 12px 14px;
   box-shadow: var(--shadow-md);
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   width: 100%;
   position: relative;
   isolation: isolate;
+  overflow: hidden;
 }
 
 .donationCard__copy {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .donationCard__title {
@@ -120,18 +140,20 @@
   border-radius: 14px;
   padding: 12px 14px;
   box-shadow: var(--shadow-md);
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   width: 100%;
   position: relative;
   isolation: isolate;
+  overflow: hidden;
 }
 
 .opensourceCard__copy {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .opensourceCard__title {
@@ -225,6 +247,7 @@
 .hint {
   font-size: 12px;
   color: var(--muted);
+  margin: 0;
 }
 
 .captchaBlock {
@@ -363,9 +386,17 @@
 }
 
 @media (max-width: 640px) {
+  .pageLogoBackdrop {
+    right: -70px;
+    top: 50%;
+    width: min(120vw, 760px);
+    transform: translateY(-50%);
+    opacity: 0.14;
+  }
+
   .donationCard,
   .opensourceCard {
-    flex-direction: column;
+    grid-template-columns: 1fr;
     align-items: flex-start;
   }
 }

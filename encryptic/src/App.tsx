@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
+import defaultLogo from "./assets/encryptic.png";
 
 type Mode = "encrypt" | "decrypt";
 
@@ -12,6 +13,7 @@ const CAPTCHA_REQUIRED = TURNSTILE_SITE_KEY.length > 0;
 const STRIPE_DONATION_URL = (import.meta.env.VITE_STRIPE_DONATION_URL ?? "").trim();
 const BRAND_LOGO_URL = (import.meta.env.VITE_LOGO_URL ?? "").trim();
 const SOURCE_CODE_URL = (import.meta.env.VITE_SOURCE_CODE_URL ?? "").trim();
+const RESOLVED_LOGO_URL = BRAND_LOGO_URL || defaultLogo;
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -251,12 +253,10 @@ export default function App() {
 
   return (
     <div className="page">
+      <img className="pageLogoBackdrop" src={RESOLVED_LOGO_URL} alt="" aria-hidden="true" />
       <main className="shell">
         <header className="header">
           <div className="brand">
-            <div className="brand__mark" aria-hidden="true">
-              {BRAND_LOGO_URL ? <img className="brand__logo" src={BRAND_LOGO_URL} alt="" /> : "E"}
-            </div>
             <div>
               <h1 className="brand__name">Encryptic</h1>
               <p className="brand__tagline">Secure file encryption and decryption for any file type.</p>
