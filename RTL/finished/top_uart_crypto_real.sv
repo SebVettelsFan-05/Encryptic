@@ -1,25 +1,14 @@
 // ============================================================
 // top_uart_crypto.sv
 // ============================================================
-// Terminal-friendly SHA-256 + AES-256 over UART.
-// ALL input is ASCII text terminated by \r or \n.
+// SHA-256 + AES-256 over UART. No FIFO - direct RX.
 //
-// PROTOCOL (type in TeraTerm / PuTTY):
-//
-//   Sabc<Enter>
-//       SHA-256 of "abc"
-//       Response: 64 hex chars + |DONE\r\n
-//
-//   Emypassword<Enter>
-//       Setup AES-256 encrypt, key = SHA-256("mypassword")
-//       Response: KEY_OK\r\n
-//       Then type 32 hex chars (= 16 bytes plaintext) + <Enter>
-//       Response: 32 hex chars (ciphertext) + \r\n
-//       Type more 32-char hex blocks, or empty Enter to exit.
-//
-//   Dmypassword<Enter>
-//       Same as E but decrypts.
-//
+// PROTOCOL:
+//   Sabc<Enter>                -> 64 hex + |DONE\r\n
+//   Emypassword<Enter>         -> KEY_OK\r\n
+//   <32 hex chars>             -> 32 hex ciphertext + \r\n
+//   Q                          -> exit AES mode
+//   Dmypassword<Enter>         -> KEY_OK\r\n (decrypt)
 // ============================================================
 
 module top_uart_crypto #(
@@ -33,7 +22,7 @@ module top_uart_crypto #(
 );
 
     // --------------------------------------------------------
-    // UART
+    // UART - direct, no FIFO
     // --------------------------------------------------------
     logic [7:0] rx_data;
     logic       rx_valid;
@@ -51,14 +40,6 @@ module top_uart_crypto #(
         .tx_data(tx_data), .tx_start(tx_start),
         .tx(uart_txd), .tx_busy(tx_busy)
     );
-
-    // TX guard
-    logic tx_just_started;
-    always_ff @(posedge clk) begin
-        if (reset) tx_just_started <= 1'b0;
-        else       tx_just_started <= tx_start;
-    end
-    wire tx_ready = !tx_busy && !tx_just_started;
 
     // --------------------------------------------------------
     // SHA-256
@@ -81,7 +62,7 @@ module top_uart_crypto #(
     );
 
     // --------------------------------------------------------
-    // AES core (always AES-256)
+    // AES core
     // --------------------------------------------------------
     logic         aes_encdec;
     logic         aes_init;
@@ -149,12 +130,17 @@ module top_uart_crypto #(
         S_AES_WAIT,
         S_AES_HEX_OUT,
         S_AES_CR,
-        S_AES_LF
+        S_AES_LF,
+
+        S_TX_PULSE,
+        S_TX_WAIT_BUSY,
+        S_TX_WAIT_DONE
     } state_t;
 
     state_t state;
+    state_t tx_return_state;
 
-    // --- SHA output ---
+    // SHA output
     logic [255:0] sha_hold;
     logic [6:0]   sha_hex_count;
     logic [5:0]   sha_byte_idx;
@@ -168,11 +154,11 @@ module top_uart_crypto #(
         sha_cur_nib  = sha_nib_lo ? sha_cur_byte[3:0] : sha_cur_byte[7:4];
     end
 
-    // --- AES hex input ---
+    // AES hex input
     logic [127:0] block_shift;
     logic [5:0]   hex_in_count;
 
-    // --- AES output ---
+    // AES output
     logic [127:0] aes_hold;
     logic [5:0]   aes_hex_count;
     logic [3:0]   aes_byte_idx;
@@ -185,36 +171,36 @@ module top_uart_crypto #(
         aes_cur_nib  = aes_nib_lo ? aes_cur_byte[3:0] : aes_cur_byte[7:4];
     end
 
-    // --- KEY_OK message ---
     logic [2:0] kok_idx;
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            state         <= S_CMD;
-            tx_data       <= 8'h00;
-            tx_start      <= 1'b0;
+            state           <= S_CMD;
+            tx_return_state <= S_CMD;
+            tx_data         <= 8'h00;
+            tx_start        <= 1'b0;
 
-            sha_msg_byte  <= 8'h00;
-            sha_msg_valid <= 1'b0;
-            sha_msg_last  <= 1'b0;
-            sha_hold      <= 256'd0;
-            sha_hex_count <= 7'd0;
-            sha_byte_idx  <= 6'd0;
-            sha_nib_lo    <= 1'b0;
-            sha_mark_idx  <= 3'd0;
+            sha_msg_byte    <= 8'h00;
+            sha_msg_valid   <= 1'b0;
+            sha_msg_last    <= 1'b0;
+            sha_hold        <= 256'd0;
+            sha_hex_count   <= 7'd0;
+            sha_byte_idx    <= 6'd0;
+            sha_nib_lo      <= 1'b0;
+            sha_mark_idx    <= 3'd0;
 
-            aes_init      <= 1'b0;
-            aes_next      <= 1'b0;
-            aes_encdec    <= 1'b1;
-            aes_key       <= 256'd0;
-            aes_block     <= 128'd0;
-            block_shift   <= 128'd0;
-            hex_in_count  <= 6'd0;
-            aes_hold      <= 128'd0;
-            aes_hex_count <= 6'd0;
-            aes_byte_idx  <= 4'd0;
-            aes_nib_lo    <= 1'b0;
-            kok_idx       <= 3'd0;
+            aes_init        <= 1'b0;
+            aes_next        <= 1'b0;
+            aes_encdec      <= 1'b1;
+            aes_key         <= 256'd0;
+            aes_block       <= 128'd0;
+            block_shift     <= 128'd0;
+            hex_in_count    <= 6'd0;
+            aes_hold        <= 128'd0;
+            aes_hex_count   <= 6'd0;
+            aes_byte_idx    <= 4'd0;
+            aes_nib_lo      <= 1'b0;
+            kok_idx         <= 3'd0;
         end else begin
             sha_msg_valid <= 1'b0;
             sha_msg_last  <= 1'b0;
@@ -224,24 +210,38 @@ module top_uart_crypto #(
 
             case (state)
 
-                // ========================================
+                // === TX SEND ===
+                S_TX_PULSE: begin
+                    tx_start <= 1'b1;
+                    state    <= S_TX_WAIT_BUSY;
+                end
+
+                S_TX_WAIT_BUSY: begin
+                    if (tx_busy)
+                        state <= S_TX_WAIT_DONE;
+                end
+
+                S_TX_WAIT_DONE: begin
+                    if (!tx_busy)
+                        state <= tx_return_state;
+                end
+
+                // === COMMAND ===
                 S_CMD: begin
                     if (rx_valid) begin
-                        if (rx_data == 8'h53)                              // 'S'
+                        if (rx_data == 8'h53)
                             state <= S_SHA_COLLECT;
-                        else if (rx_data == 8'h45) begin                   // 'E'
+                        else if (rx_data == 8'h45) begin
                             aes_encdec <= 1'b1;
                             state      <= S_AES_PASS;
-                        end else if (rx_data == 8'h44) begin               // 'D'
+                        end else if (rx_data == 8'h44) begin
                             aes_encdec <= 1'b0;
                             state      <= S_AES_PASS;
                         end
                     end
                 end
 
-                // ========================================
-                // SHA-256 STANDALONE
-                // ========================================
+                // === SHA-256 ===
                 S_SHA_COLLECT: begin
                     if (rx_valid && sha_in_ready) begin
                         if (is_eol(rx_data)) begin
@@ -267,58 +267,53 @@ module top_uart_crypto #(
                 end
 
                 S_SHA_HEX: begin
-                    if (tx_ready) begin
-                        tx_data  <= hex_char(sha_cur_nib);
-                        tx_start <= 1'b1;
-                        if (sha_hex_count == 7'd63) begin
-                            sha_mark_idx <= 3'd0;
-                            state        <= S_SHA_MARK;
-                        end else begin
-                            sha_hex_count <= sha_hex_count + 7'd1;
-                            if (sha_nib_lo) begin
-                                sha_nib_lo   <= 1'b0;
-                                sha_byte_idx <= sha_byte_idx + 6'd1;
-                            end else
-                                sha_nib_lo <= 1'b1;
-                        end
+                    tx_data         <= hex_char(sha_cur_nib);
+                    tx_return_state <= S_SHA_HEX;
+                    if (sha_hex_count == 7'd63) begin
+                        sha_mark_idx    <= 3'd0;
+                        tx_return_state <= S_SHA_MARK;
+                    end else begin
+                        sha_hex_count <= sha_hex_count + 7'd1;
+                        if (sha_nib_lo) begin
+                            sha_nib_lo   <= 1'b0;
+                            sha_byte_idx <= sha_byte_idx + 6'd1;
+                        end else
+                            sha_nib_lo <= 1'b1;
                     end
+                    state <= S_TX_PULSE;
                 end
 
                 S_SHA_MARK: begin
-                    if (tx_ready) begin
-                        tx_start <= 1'b1;
-                        case (sha_mark_idx)
-                            3'd0: tx_data <= 8'h7C;
-                            3'd1: tx_data <= 8'h44;
-                            3'd2: tx_data <= 8'h4F;
-                            3'd3: tx_data <= 8'h4E;
-                            3'd4: tx_data <= 8'h45;
-                            default: tx_data <= 8'h3F;
-                        endcase
-                        if (sha_mark_idx == 3'd4)
-                            state <= S_SHA_CR;
-                        else
-                            sha_mark_idx <= sha_mark_idx + 3'd1;
+                    case (sha_mark_idx)
+                        3'd0: tx_data <= 8'h7C;
+                        3'd1: tx_data <= 8'h44;
+                        3'd2: tx_data <= 8'h4F;
+                        3'd3: tx_data <= 8'h4E;
+                        3'd4: tx_data <= 8'h45;
+                        default: tx_data <= 8'h3F;
+                    endcase
+                    if (sha_mark_idx == 3'd4)
+                        tx_return_state <= S_SHA_CR;
+                    else begin
+                        sha_mark_idx    <= sha_mark_idx + 3'd1;
+                        tx_return_state <= S_SHA_MARK;
                     end
+                    state <= S_TX_PULSE;
                 end
 
                 S_SHA_CR: begin
-                    if (tx_ready) begin
-                        tx_data <= 8'h0D; tx_start <= 1'b1;
-                        state   <= S_SHA_LF;
-                    end
+                    tx_data <= 8'h0D;
+                    tx_return_state <= S_SHA_LF;
+                    state <= S_TX_PULSE;
                 end
 
                 S_SHA_LF: begin
-                    if (tx_ready) begin
-                        tx_data <= 8'h0A; tx_start <= 1'b1;
-                        state   <= S_CMD;
-                    end
+                    tx_data <= 8'h0A;
+                    tx_return_state <= S_CMD;
+                    state <= S_TX_PULSE;
                 end
 
-                // ========================================
-                // AES: PASSPHRASE -> SHA-256 -> KEY
-                // ========================================
+                // === AES PASSPHRASE ===
                 S_AES_PASS: begin
                     if (rx_valid && sha_in_ready) begin
                         if (is_eol(rx_data)) begin
@@ -354,46 +349,42 @@ module top_uart_crypto #(
                     end
                 end
 
-                // Send "KEY_OK\r\n"
                 S_AES_KEY_OK: begin
-                    if (tx_ready) begin
-                        tx_start <= 1'b1;
-                        case (kok_idx)
-                            3'd0: tx_data <= 8'h4B; // K
-                            3'd1: tx_data <= 8'h45; // E
-                            3'd2: tx_data <= 8'h59; // Y
-                            3'd3: tx_data <= 8'h5F; // _
-                            3'd4: tx_data <= 8'h4F; // O
-                            3'd5: tx_data <= 8'h4B; // K
-                            3'd6: tx_data <= 8'h0D; // \r
-                            3'd7: begin
-                                tx_data      <= 8'h0A; // \n
-                                hex_in_count <= 6'd0;
-                                block_shift  <= 128'd0;
-                                state        <= S_AES_HEX_IN;
-                            end
-                            default: tx_data <= 8'h3F;
-                        endcase
-                        if (kok_idx < 3'd7)
-                            kok_idx <= kok_idx + 3'd1;
+                    case (kok_idx)
+                        3'd0: tx_data <= 8'h4B;
+                        3'd1: tx_data <= 8'h45;
+                        3'd2: tx_data <= 8'h59;
+                        3'd3: tx_data <= 8'h5F;
+                        3'd4: tx_data <= 8'h4F;
+                        3'd5: tx_data <= 8'h4B;
+                        3'd6: tx_data <= 8'h0D;
+                        3'd7: tx_data <= 8'h0A;
+                        default: tx_data <= 8'h3F;
+                    endcase
+                    if (kok_idx == 3'd7) begin
+                        hex_in_count    <= 6'd0;
+                        block_shift     <= 128'd0;
+                        tx_return_state <= S_AES_HEX_IN;
+                    end else begin
+                        kok_idx         <= kok_idx + 3'd1;
+                        tx_return_state <= S_AES_KEY_OK;
                     end
+                    state <= S_TX_PULSE;
                 end
 
-                // ========================================
-                // AES: COLLECT 32 HEX CHARS
-                // ========================================
+                // === AES HEX INPUT ===
                 S_AES_HEX_IN: begin
                     if (rx_valid) begin
                         if (is_hex_char(rx_data)) begin
-                            block_shift  <= {block_shift[123:0], hex_to_nib(rx_data)};
+                            block_shift <= {block_shift[123:0], hex_to_nib(rx_data)};
                             if (hex_in_count == 6'd31)
                                 state <= S_AES_START;
                             else
                                 hex_in_count <= hex_in_count + 6'd1;
-                        end else if (is_eol(rx_data) && hex_in_count == 6'd0) begin
-                            // Empty line -> back to command mode
+                        end else if (rx_data == 8'h51) begin  // 'Q'
                             state <= S_CMD;
                         end
+                        // CR, LF, anything else: ignored (and lost, no FIFO)
                     end
                 end
 
@@ -415,40 +406,34 @@ module top_uart_crypto #(
                     end
                 end
 
-                // ========================================
-                // AES: SEND 32 HEX RESULT
-                // ========================================
                 S_AES_HEX_OUT: begin
-                    if (tx_ready) begin
-                        tx_data  <= hex_char(aes_cur_nib);
-                        tx_start <= 1'b1;
-                        if (aes_hex_count == 6'd31)
-                            state <= S_AES_CR;
-                        else begin
-                            aes_hex_count <= aes_hex_count + 6'd1;
-                            if (aes_nib_lo) begin
-                                aes_nib_lo   <= 1'b0;
-                                aes_byte_idx <= aes_byte_idx + 4'd1;
-                            end else
-                                aes_nib_lo <= 1'b1;
-                        end
+                    tx_data         <= hex_char(aes_cur_nib);
+                    tx_return_state <= S_AES_HEX_OUT;
+                    if (aes_hex_count == 6'd31)
+                        tx_return_state <= S_AES_CR;
+                    else begin
+                        aes_hex_count <= aes_hex_count + 6'd1;
+                        if (aes_nib_lo) begin
+                            aes_nib_lo   <= 1'b0;
+                            aes_byte_idx <= aes_byte_idx + 4'd1;
+                        end else
+                            aes_nib_lo <= 1'b1;
                     end
+                    state <= S_TX_PULSE;
                 end
 
                 S_AES_CR: begin
-                    if (tx_ready) begin
-                        tx_data <= 8'h0D; tx_start <= 1'b1;
-                        state   <= S_AES_LF;
-                    end
+                    tx_data <= 8'h0D;
+                    tx_return_state <= S_AES_LF;
+                    state <= S_TX_PULSE;
                 end
 
                 S_AES_LF: begin
-                    if (tx_ready) begin
-                        tx_data      <= 8'h0A; tx_start <= 1'b1;
-                        hex_in_count <= 6'd0;
-                        block_shift  <= 128'd0;
-                        state        <= S_AES_HEX_IN;
-                    end
+                    tx_data         <= 8'h0A;
+                    hex_in_count    <= 6'd0;
+                    block_shift     <= 128'd0;
+                    tx_return_state <= S_AES_HEX_IN;
+                    state           <= S_TX_PULSE;
                 end
 
                 default: state <= S_CMD;
