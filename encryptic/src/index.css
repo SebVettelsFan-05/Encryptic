@@ -1,68 +1,66 @@
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  --accent: #22c55e;
+  --bg: #f5f7fb;
+  --surface: rgba(255, 255, 255, 0.8);
+  --border: rgba(12, 14, 20, 0.14);
+  --text: rgba(10, 12, 18, 0.92);
+  --muted: rgba(10, 12, 18, 0.62);
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.12);
 
   color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+* {
+  box-sizing: border-box;
 }
-a:hover {
-  color: #535bf2;
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  color: var(--text);
+  background:
+    radial-gradient(900px 500px at 10% 10%, rgba(34, 197, 94, 0.14), transparent 60%),
+    radial-gradient(800px 500px at 90% 90%, rgba(56, 189, 248, 0.12), transparent 60%),
+    var(--bg);
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+@media (max-width: 640px) {
+  body {
+    background:
+      radial-gradient(520px 320px at 8% 12%, rgba(34, 197, 94, 0.08), transparent 62%),
+      radial-gradient(460px 280px at 88% 32%, rgba(56, 189, 248, 0.07), transparent 64%),
+      var(--bg);
+    background-repeat: no-repeat, no-repeat, no-repeat;
+    background-size: 140% 170%, 140% 170%, auto;
+  }
 }
 
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+a {
+  color: inherit;
 }
 
-@media (prefers-color-scheme: light) {
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
   :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
+    --bg: #0d1118;
+    --surface: rgba(255, 255, 255, 0.06);
+    --border: rgba(255, 255, 255, 0.12);
+    --text: rgba(255, 255, 255, 0.92);
+    --muted: rgba(255, 255, 255, 0.66);
+    --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.3);
   }
 }
