@@ -6,6 +6,7 @@ crypto_uart.py — Robust CLI for FPGA SHA-256 + AES-256.
 import serial
 import sys
 import time
+import hashlib
 
 DEBUG = False
 
@@ -17,6 +18,7 @@ FIRST_BYTE_DELAY    = 0.005
 RETRY_LIMIT         = 3
 STREAM_RETRY_LIMIT  = 20
 ROLLBACK_BLOCKS     = 2
+VERIFY_BLOCK_HASH   = True
 
 
 def open_serial(port, baud):
@@ -113,6 +115,25 @@ def cmd_aes_hex_block(ser, block_16_bytes):
     return None
 
 
+def block_hash_16(block_bytes):
+    return hashlib.sha256(block_bytes).hexdigest()
+
+
+def replay_window(ser, mode, passphrase, blocks, start_idx, end_idx):
+    if not cmd_aes_setup(ser, mode, passphrase):
+        return None
+
+    out = []
+    for idx in range(start_idx, end_idx + 1):
+        block_out = cmd_aes_hex_block(ser, blocks[idx])
+        if block_out is None:
+            return None
+        out.append(block_out)
+        time.sleep(INTER_BLOCK_DELAY)
+
+    return out
+
+
 def process_blocks_with_rollback(ser, mode, passphrase, blocks, progress_label):
     num_blocks = len(blocks)
     results = [None] * num_blocks
@@ -123,12 +144,34 @@ def process_blocks_with_rollback(ser, mode, passphrase, blocks, progress_label):
         return None
 
     while i < num_blocks:
+        failure_reason = None
         block_out = cmd_aes_hex_block(ser, blocks[i])
 
-        if block_out is not None:
+        if block_out is None:
+            failure_reason = "read/parse failure"
+        else:
             results[i] = block_out
-            i += 1
             time.sleep(INTER_BLOCK_DELAY)
+
+            if VERIFY_BLOCK_HASH:
+                verify_start = max(0, i - (ROLLBACK_BLOCKS - 1))
+                verify_out = replay_window(ser, mode, passphrase, blocks, verify_start, i)
+                if verify_out is None:
+                    failure_reason = "verification replay failed"
+                else:
+                    verify_last = verify_out[-1]
+                    for offset, out_block in enumerate(verify_out):
+                        results[verify_start + offset] = out_block
+
+                    primary_hash = block_hash_16(block_out)
+                    verify_hash = block_hash_16(verify_last)
+                    if primary_hash != verify_hash:
+                        failure_reason = "hash mismatch"
+                        if DEBUG:
+                            print(f"    [VERIFY FAIL] idx={i+1} run={primary_hash[:16]} replay={verify_hash[:16]}")
+
+        if failure_reason is None:
+            i += 1
 
             if not DEBUG:
                 pct = i * 100 // num_blocks
@@ -143,7 +186,10 @@ def process_blocks_with_rollback(ser, mode, passphrase, blocks, progress_label):
         rollback_start = max(0, i - (ROLLBACK_BLOCKS - 1))
         rolled_from = rollback_start + 1
         rolled_to = i + 1
-        print(f"\n  Block {i+1} failed, rolling back blocks {rolled_from}-{rolled_to} (retry {stream_retries}/{STREAM_RETRY_LIMIT})")
+        print(
+            f"\n  Block {i+1} failed ({failure_reason}), rolling back blocks {rolled_from}-{rolled_to} "
+            f"(retry {stream_retries}/{STREAM_RETRY_LIMIT})"
+        )
 
         for j in range(rollback_start, i + 1):
             results[j] = None
