@@ -19,6 +19,9 @@ RETRY_LIMIT         = 3
 STREAM_RETRY_LIMIT  = 20
 ROLLBACK_BLOCKS     = 2
 VERIFY_BLOCK_HASH   = True
+SETUP_RETRY_LIMIT   = 4
+KEY_OK_WAIT_SEC     = 2.0
+SETUP_RETRY_DELAY   = 0.05
 
 
 def open_serial(port, baud):
@@ -54,34 +57,44 @@ def cmd_hash_string(ser, message):
 
 
 def cmd_aes_setup(ser, mode, passphrase):
-    ser.reset_input_buffer()
-
-    # force exit any lingering AES mode
-    ser.write(b'Q')
-    ser.flush()
-    time.sleep(0.02)
-    ser.reset_input_buffer()
-
     cmd = b'E' if mode == 'encrypt' else b'D'
     payload = cmd + passphrase.strip().encode('ascii') + b'\r'
+    last_nonempty = ""
 
-    if DEBUG:
-        print(f"    [TX] {payload}")
+    for setup_try in range(SETUP_RETRY_LIMIT):
+        ser.reset_input_buffer()
 
-    send_bytes_safe(ser, payload)
+        # force exit any lingering AES mode
+        ser.write(b'Q')
+        ser.flush()
+        time.sleep(0.02)
+        ser.reset_input_buffer()
 
-    line = read_line(ser)
+        if DEBUG:
+            print(f"    [TX] {payload} (setup try {setup_try+1})")
 
-    if 'KEY_OK' not in line:
-        print(f"  WARNING: expected KEY_OK, got: '{line}'")
-        return False
+        send_bytes_safe(ser, payload)
 
-    print(f"  {line}")
+        deadline = time.time() + KEY_OK_WAIT_SEC
 
-    # give FPGA time to finish key expansion
-    time.sleep(POST_KEY_DELAY)
+        while time.time() < deadline:
+            line = read_line(ser)
+            if not line:
+                continue
+            last_nonempty = line
+            if 'KEY_OK' in line:
+                print(f"  {line}")
+                # give FPGA time to finish key expansion
+                time.sleep(POST_KEY_DELAY)
+                return True
 
-    return True
+        if DEBUG and last_nonempty:
+            print(f"    [SETUP RETRY] got '{last_nonempty}', expected KEY_OK")
+
+        time.sleep(SETUP_RETRY_DELAY)
+
+    print(f"  WARNING: expected KEY_OK, got: '{last_nonempty}'")
+    return False
 
 
 def cmd_aes_hex_block(ser, block_16_bytes):
