@@ -18,7 +18,8 @@ module top_uart_crypto #(
     input  logic       clk,
     input  logic       reset,
     input  logic       uart_rxd,
-    output logic       uart_txd
+    output logic       uart_txd,
+    output logic    [15:0] led
 );
 
     // --------------------------------------------------------
@@ -29,7 +30,9 @@ module top_uart_crypto #(
     logic [7:0] tx_data;
     logic       tx_start;
     logic       tx_busy;
-
+    logic [30:0] led_counter;
+    
+    assign led = (tx_start || tx_busy || rx_valid) ? 16'hFFFF : 16'h0000;
     uart_rx #(.BAUD_DIV(BAUD_DIV)) u_rx (
         .clk(clk), .rst(reset),
         .rx(uart_rxd), .rx_data(rx_data), .rx_valid(rx_valid)
@@ -213,6 +216,7 @@ module top_uart_crypto #(
             nib_lo          <= 1'b0;
             byte_shift      <= 8'd0;
             kok_idx         <= 3'd0;
+            led_counter <= 1'b0;
         end else begin
             // default pulses off
             sha_msg_valid <= 1'b0;
@@ -220,7 +224,7 @@ module top_uart_crypto #(
             aes_init      <= 1'b0;
             aes_next      <= 1'b0;
             tx_start      <= 1'b0;
-
+            led_counter <= led_counter + 1;
             case (state)
 
                 // === TX FSM ===
