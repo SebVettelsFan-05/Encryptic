@@ -12,13 +12,15 @@ DEBUG = False
 # --- Timing controls (tune if needed) ---
 STARTUP_DELAY       = 0.4
 POST_KEY_DELAY      = 0.05
-INTER_BLOCK_DELAY   = 0.01
-FIRST_BYTE_DELAY    = 0.01
+INTER_BLOCK_DELAY   = 0.005
+FIRST_BYTE_DELAY    = 0.005
 RETRY_LIMIT         = 3
+STREAM_RETRY_LIMIT  = 20
+ROLLBACK_BLOCKS     = 2
 
 
 def open_serial(port, baud):
-    ser = serial.Serial(port, baud, timeout=5)
+    ser = serial.Serial(port, baud, timeout=0.5)
     time.sleep(STARTUP_DELAY)
     ser.reset_input_buffer()
     return ser
@@ -111,6 +113,52 @@ def cmd_aes_hex_block(ser, block_16_bytes):
     return None
 
 
+def process_blocks_with_rollback(ser, mode, passphrase, blocks, progress_label):
+    num_blocks = len(blocks)
+    results = [None] * num_blocks
+    stream_retries = 0
+    i = 0
+
+    if not cmd_aes_setup(ser, mode, passphrase):
+        return None
+
+    while i < num_blocks:
+        block_out = cmd_aes_hex_block(ser, blocks[i])
+
+        if block_out is not None:
+            results[i] = block_out
+            i += 1
+            time.sleep(INTER_BLOCK_DELAY)
+
+            if not DEBUG:
+                pct = i * 100 // num_blocks
+                print(f"\r  {progress_label}: {i}/{num_blocks} ({pct}%)", end='', flush=True)
+            continue
+
+        stream_retries += 1
+        if stream_retries > STREAM_RETRY_LIMIT:
+            print(f"\n  ABORTED at block {i+1} (stream retry limit reached)")
+            return None
+
+        rollback_start = max(0, i - (ROLLBACK_BLOCKS - 1))
+        rolled_from = rollback_start + 1
+        rolled_to = i + 1
+        print(f"\n  Block {i+1} failed, rolling back blocks {rolled_from}-{rolled_to} (retry {stream_retries}/{STREAM_RETRY_LIMIT})")
+
+        for j in range(rollback_start, i + 1):
+            results[j] = None
+
+        i = rollback_start
+
+        if not cmd_aes_setup(ser, mode, passphrase):
+            return None
+
+    if not DEBUG:
+        print()
+
+    return b''.join(results)
+
+
 def pkcs7_pad(data):
     pad_len = 16 - (len(data) % 16)
     return data + bytes([pad_len] * pad_len)
@@ -137,29 +185,11 @@ def encrypt_file(ser, passphrase, inpath, outpath):
     print(f"  Passphrase:   \"{passphrase}\"")
     print()
 
-    if not cmd_aes_setup(ser, 'encrypt', passphrase):
-        return
-
-    ciphertext = b''
     t0 = time.time()
-
-    for i in range(num_blocks):
-        block = padded[i*16:(i+1)*16]
-
-        ct_block = cmd_aes_hex_block(ser, block)
-        if ct_block is None:
-            print(f"\n  ABORTED at block {i+1}")
-            return
-
-        ciphertext += ct_block
-
-        time.sleep(INTER_BLOCK_DELAY)
-
-        if not DEBUG:
-            pct = (i+1)*100//num_blocks
-            print(f"\r  Encrypting: {i+1}/{num_blocks} ({pct}%)", end='', flush=True)
-
-    print()
+    blocks = [padded[i*16:(i+1)*16] for i in range(num_blocks)]
+    ciphertext = process_blocks_with_rollback(ser, 'encrypt', passphrase, blocks, "Encrypting")
+    if ciphertext is None:
+        return
 
     with open(outpath, 'wb') as f:
         f.write(ciphertext)
@@ -181,29 +211,11 @@ def decrypt_file(ser, passphrase, inpath, outpath):
     print(f"  Passphrase:   \"{passphrase}\"")
     print()
 
-    if not cmd_aes_setup(ser, 'decrypt', passphrase):
-        return
-
-    plaintext_padded = b''
     t0 = time.time()
-
-    for i in range(num_blocks):
-        block = ciphertext[i*16:(i+1)*16]
-
-        pt_block = cmd_aes_hex_block(ser, block)
-        if pt_block is None:
-            print(f"\n  ABORTED at block {i+1}")
-            return
-
-        plaintext_padded += pt_block
-
-        time.sleep(INTER_BLOCK_DELAY)
-
-        if not DEBUG:
-            pct = (i+1)*100//num_blocks
-            print(f"\r  Decrypting: {i+1}/{num_blocks} ({pct}%)", end='', flush=True)
-
-    print()
+    blocks = [ciphertext[i*16:(i+1)*16] for i in range(num_blocks)]
+    plaintext_padded = process_blocks_with_rollback(ser, 'decrypt', passphrase, blocks, "Decrypting")
+    if plaintext_padded is None:
+        return
 
     try:
         plaintext = pkcs7_unpad(plaintext_padded)
