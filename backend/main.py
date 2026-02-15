@@ -1,12 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import io
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Optional
 from urllib import parse, request as urlrequest
 
@@ -21,25 +20,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MAGIC = b"ENCRYPTIC"   # 8 bytes
-SALT_LEN = 16
-NONCE_LEN = 12
-KDF_ITERS = 200_000
-HEADER_LEN = len(MAGIC) + SALT_LEN + NONCE_LEN  # 36
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+UART_PORT = os.getenv("CRYPTO_UART_PORT", "COM7").strip()
+UART_BAUD = os.getenv("CRYPTO_UART_BAUD", "115200").strip()
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from Testing import testing1
 
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 TURNSTILE_ENABLED = os.getenv("TURNSTILE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "").strip()
-
-
-def derive_key(passkey: str, salt: bytes) -> bytes:
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=KDF_ITERS,
-    )
-    return kdf.derive(passkey.encode("utf-8"))
 
 
 def make_enc_name(filename: str) -> str:
@@ -50,6 +42,31 @@ def strip_enc_ext(filename: str) -> str:
     if filename.lower().endswith(".enc"):
         return filename[:-4]
     return filename or "decrypted"
+
+
+def run_uart_crypto(command: str, passkey: str, file_bytes: bytes, filename: str) -> tuple[bytes, str]:
+    if command not in {"encrypt", "decrypt"}:
+        raise ValueError("invalid command")
+
+    try:
+        passkey.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("passkey must be ASCII for FPGA UART flow") from exc
+
+    out_name = make_enc_name(filename) if command == "encrypt" else strip_enc_ext(filename)
+    try:
+        baud = int(UART_BAUD)
+    except ValueError as exc:
+        raise ValueError("CRYPTO_UART_BAUD must be an integer") from exc
+
+    output_bytes = testing1.run_crypto_bytes(
+        command=command,
+        port=UART_PORT,
+        baud=baud,
+        passphrase=passkey,
+        input_bytes=file_bytes,
+    )
+    return output_bytes, out_name
 
 
 def verify_turnstile(token: Optional[str], remote_ip: Optional[str]) -> tuple[bool, int, str]:
@@ -113,18 +130,20 @@ async def encrypt(
     if not data:
         return JSONResponse({"error": "empty file"}, status_code=400)
 
-    salt = os.urandom(SALT_LEN)
-    nonce = os.urandom(NONCE_LEN)
-    key = derive_key(clean_passkey, salt)
-    aes = AESGCM(key)
+    try:
+        output_bytes, out_name = run_uart_crypto(
+            "encrypt",
+            clean_passkey,
+            data,
+            file.filename or "file",
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
-    ct = aes.encrypt(nonce, data, None)
-    payload = MAGIC + salt + nonce + ct
-
-    out = io.BytesIO(payload)
+    out = io.BytesIO(output_bytes)
     out.seek(0)
-
-    out_name = make_enc_name(file.filename or "file")
     return StreamingResponse(
         out,
         media_type="application/octet-stream",
@@ -150,32 +169,23 @@ async def decrypt(
         return JSONResponse({"error": "passkey required"}, status_code=400)
 
     data = await file.read()
-    if not data or len(data) < HEADER_LEN + 1:
-        return JSONResponse({"error": "file too small / invalid"}, status_code=400)
-
-    if not data.startswith(MAGIC):
-        return JSONResponse({"error": "not an Encryptic file"}, status_code=400)
-
-    salt_off = len(MAGIC)
-    nonce_off = salt_off + SALT_LEN
-    ct_off = nonce_off + NONCE_LEN
-
-    salt = data[salt_off:nonce_off]
-    nonce = data[nonce_off:ct_off]
-    ct = data[ct_off:]
-
-    key = derive_key(clean_passkey, salt)
-    aes = AESGCM(key)
+    if not file.filename or not file.filename.lower().endswith(".enc"):
+        return JSONResponse({"error": "expected a .enc file for decryption"}, status_code=400)
 
     try:
-        pt = aes.decrypt(nonce, ct, None)
-    except Exception:
-        return JSONResponse({"error": "bad passkey or corrupted file"}, status_code=400)
+        output_bytes, out_name = run_uart_crypto(
+            "decrypt",
+            clean_passkey,
+            data,
+            file.filename or "file.enc",
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
-    out = io.BytesIO(pt)
+    out = io.BytesIO(output_bytes)
     out.seek(0)
-
-    out_name = strip_enc_ext(file.filename or "file")
     return StreamingResponse(
         out,
         media_type="application/octet-stream",

@@ -7,6 +7,8 @@ import serial
 import sys
 import time
 import hashlib
+import tempfile
+from pathlib import Path
 
 DEBUG = False
 
@@ -22,6 +24,10 @@ VERIFY_BLOCK_HASH   = True
 SETUP_RETRY_LIMIT   = 4
 KEY_OK_WAIT_SEC     = 2.0
 SETUP_RETRY_DELAY   = 0.05
+
+
+class CryptoUartError(RuntimeError):
+    pass
 
 
 def open_serial(port, baud):
@@ -286,6 +292,47 @@ def decrypt_file(ser, passphrase, inpath, outpath):
         f.write(plaintext)
 
     print(f"  Written to: {outpath} ({time.time()-t0:.1f}s)")
+
+
+def run_crypto_bytes(command, port, baud, passphrase, input_bytes):
+    if command not in {"encrypt", "decrypt"}:
+        raise ValueError("command must be 'encrypt' or 'decrypt'")
+
+    if not isinstance(input_bytes, (bytes, bytearray)):
+        raise ValueError("input_bytes must be bytes-like")
+
+    try:
+        passphrase.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("passphrase must be ASCII") from exc
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        in_path = temp_path / ("input.enc" if command == "decrypt" else "input.bin")
+        out_path = temp_path / ("output.bin" if command == "decrypt" else "output.enc")
+        in_path.write_bytes(bytes(input_bytes))
+
+        ser = open_serial(port, int(baud))
+        try:
+            if command == "encrypt":
+                encrypt_file(ser, passphrase, str(in_path), str(out_path))
+            else:
+                decrypt_file(ser, passphrase, str(in_path), str(out_path))
+        finally:
+            ser.close()
+
+        if not out_path.exists():
+            raise CryptoUartError(f"{command} failed: no output from FPGA flow")
+
+        return out_path.read_bytes()
+
+
+def encrypt_bytes(port, baud, passphrase, plaintext_bytes):
+    return run_crypto_bytes("encrypt", port, baud, passphrase, plaintext_bytes)
+
+
+def decrypt_bytes(port, baud, passphrase, ciphertext_bytes):
+    return run_crypto_bytes("decrypt", port, baud, passphrase, ciphertext_bytes)
 
 
 def print_usage():

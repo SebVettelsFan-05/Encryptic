@@ -1,11 +1,21 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import defaultLogo from "./assets/encryptic.png";
 
 type Mode = "encrypt" | "decrypt";
+type BlobSpec = {
+  id: number;
+  size: number;
+  left: number;
+  top: number;
+  dx: number;
+  dy: number;
+  duration: number;
+  delay: number;
+  opacity: number;
+};
 
 const API_BASE = "/api";
-const MAGIC = "ENCRYPTIC";
 
 const TURNSTILE_SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY ?? "").trim();
 const CAPTCHA_REQUIRED = TURNSTILE_SITE_KEY.length > 0;
@@ -31,16 +41,8 @@ function formatBytes(bytes: number): string {
   return `${size.toFixed(decimals)} ${units[index]}`;
 }
 
-async function isEncrypticFile(file: File): Promise<boolean> {
-  const fileHead = new Uint8Array(await file.slice(0, MAGIC.length).arrayBuffer());
-  if (fileHead.length < MAGIC.length) return false;
-
-  const magicBytes = new TextEncoder().encode(MAGIC);
-  for (let i = 0; i < magicBytes.length; i++) {
-    if (fileHead[i] !== magicBytes[i]) return false;
-  }
-
-  return true;
+function isEncryptedFileByExtension(file: File): boolean {
+  return file.name.toLowerCase().endsWith(".enc");
 }
 
 function getEndpoint(mode: Mode): string {
@@ -135,6 +137,21 @@ export default function App() {
   const [dragActive, setDragActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [captchaToken, setCaptchaToken] = useState("");
+  const blobSpecs = useMemo<BlobSpec[]>(
+    () =>
+      Array.from({ length: 4 }, (_, id) => ({
+        id,
+        size: 220 + Math.random() * 170,
+        left: 10 + Math.random() * 80,
+        top: 8 + Math.random() * 84,
+        dx: (Math.random() * 2 - 1) * 90,
+        dy: (Math.random() * 2 - 1) * 70,
+        duration: 16 + Math.random() * 10,
+        delay: -Math.random() * 18,
+        opacity: 0.1 + Math.random() * 0.11,
+      })),
+    []
+  );
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const turnstileMountRef = useRef<HTMLDivElement | null>(null);
@@ -158,9 +175,9 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [resetCaptcha]);
 
-  const handleFileSelection = useCallback(async (file: File) => {
+  const handleFileSelection = useCallback((file: File) => {
     setSelectedFile(file);
-    const encrypted = await isEncrypticFile(file);
+    const encrypted = isEncryptedFileByExtension(file);
     setMode(encrypted ? "decrypt" : "encrypt");
   }, []);
 
@@ -262,6 +279,27 @@ export default function App() {
 
   return (
     <div className="page">
+      <div className="blobField" aria-hidden="true">
+        {blobSpecs.map((blob) => (
+          <span
+            key={blob.id}
+            className="blob"
+            style={
+              {
+                width: `${blob.size}px`,
+                height: `${blob.size}px`,
+                left: `${blob.left}%`,
+                top: `${blob.top}%`,
+                opacity: blob.opacity,
+                "--dx": `${blob.dx}px`,
+                "--dy": `${blob.dy}px`,
+                "--duration": `${blob.duration}s`,
+                "--delay": `${blob.delay}s`,
+              } as React.CSSProperties
+            }
+          />
+        ))}
+      </div>
       <img className="pageLogoBackdrop" src={RESOLVED_LOGO_URL} alt="" aria-hidden="true" />
       <main className="shell">
         <header className="header">
